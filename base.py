@@ -1,4 +1,6 @@
 import torch.nn as nn
+import torch.nn.functional as F
+from util import calc_pad
 
 
 class SEBlock(nn.Module):
@@ -15,6 +17,10 @@ class SEBlock(nn.Module):
         act_layer(nn.<activation_layer>, optional):
                                           Activation layer.
                                           Default: nn.ReLU
+        norm_layer(nn.<norm_layer>, optional): normalisation layer.
+                                               If not provided any value,
+                                               identity layer is added.
+                                               Default: None
         skip(boolean, optional): Skip weight initialisation for the squeeze and
                                  excitation block.
                                  Default: False
@@ -26,14 +32,19 @@ class SEBlock(nn.Module):
 
     """
     def __init__(self, in_ch, reduction_ratio=0.25, act_layer=nn.ReLU,
-                 skip=False):
+                 norm_layer=None, skip=False):
         super().__init__()
-        reduced_channels = int(in_ch * reduction_ratio)
+        reduced_channels = max(1, int(in_ch * reduction_ratio))
         self.actn = act_layer(inplace=True)
-        self.squeeze = nn.Conv2d(in_ch, reduced_channels, kernel_size=1,
-                                 stride=1, bias=True)
-        self.excite = nn.Conv2d(reduced_channels, in_ch, kernel_size=1,
-                                stride=1, bias=True)
+        self.k = 1
+        self.s = 1
+        self.d = 1
+        self.squeeze = nn.Conv2d(in_ch, reduced_channels, kernel_size=self.k,
+                                 stride=self.s, dilation=self.d, bias=True)
+        self.excite = nn.Conv2d(reduced_channels, in_ch, kernel_size=self.k,
+                                stride=self.s, dilation=self.d, bias=True)
+        self.norm_layer = norm_layer if norm_layer is not None \
+            else nn.Identity()
         self.sigmoid = nn.Sigmoid()
         self.init_weights(skip)
 
@@ -48,9 +59,12 @@ class SEBlock(nn.Module):
                     nn.init.zeros_(module.bias)
 
     def forward(self, x):
+        pad = calc_pad((x.shape[2], x.shape[3]), self.k, self.s, self.d)
+        x = F.pad(x, pad, mode='reflect')
         orig = x
         x = x.mean((2, 3), keepdim=True)
         x = self.squeeze(x)
+        x = self.norm_layer(x)
         x = self.actn(x)
         x = self.excite(x)
         x = self.sigmoid(x)
