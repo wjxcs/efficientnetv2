@@ -1,6 +1,7 @@
 from itertools import repeat
 from typing import Union, Sequence
 import torch
+import torch.nn as nn
 
 TORCH_MAJOR = int(torch.__version__.split('.')[0])
 TORCH_MINOR = int(torch.__version__.split('.')[1])
@@ -9,6 +10,50 @@ if TORCH_MAJOR == 1 and TORCH_MINOR < 8:
     from torch._six import container_abcs
 else:
     import collections.abc as container_abcs
+
+
+if hasattr(nn, 'SiLU'):
+    SiLU = nn.SiLU(inplace=True)
+else:
+    class SiLU(nn.Module):
+        def forward(self, x):
+            return x * torch.sigmoid(x)
+
+
+class SiLUImpl(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x):
+        res = x * torch.sigmoid(x)
+        ctx.save_for_backward(x)
+        return res
+
+    @staticmethod
+    def backward(ctx, grad):
+        x = ctx.saved_tensors[0]
+        sig_x = torch.sigmoid(x)
+        return grad * (sig_x * (1 + x * (1 - sig_x)))
+
+
+class MemoryEfficientSiLU(nn.Module):
+    def forward(self, x):
+        return SiLUImpl.apply(x)
+
+
+# From:
+# https://github.com/tensorflow/models/blob/master/research/slim/nets/mobilenet/mobilenet.py
+def make_divisible(v, divisor, min_value=None):
+    """
+    This function taken from tf code repository.
+    It ensures that the return value is divisible by 8.
+    """
+    if min_value is None:
+        min_value = divisor
+    new_v = max(min_value, int(v + divisor / 2) // divisor * divisor)
+
+    # Make sure that round down does not go down by more than 10%.
+    if new_v < 0.9 * v:
+        new_v += divisor
+    return new_v
 
 
 # From PyTorch internals (with little change)
@@ -39,31 +84,19 @@ def calc_pad(img_size: Union[int, Sequence[int]],
     return (pad0//2, pad0-pad0//2, pad1//2, pad1-pad1//2)
 
 
-def activation_fn(name, inplace=True):
-    name = name.lower()
-    if name in ('swish', 'silu'):
-        return torch.nn.SiLU(inplace=inplace)
-    elif name == 'relu':
-        return torch.nn.ReLU(inplace=inplace)
-    elif name == 'relu6':
-        return torch.nn.ReLU6(inplace=inplace)
-    elif name == 'elu':
-        return torch.nn.ELU(inplace=inplace)
-    elif name == 'leaky_relu':
-        return torch.nn.LeakyReLU(inplace=inplace)
-    elif name == 'selu':
-        return torch.nn.SELU(inplace=inplace)
-    elif name == 'mish':
-        return torch.nn.Mish(inplace=inplace)
-    elif name == 'hswish':
-        return torch.nn.Hardswish(inplace=inplace)
-    else:
-        raise ValueError("Unsupported act_fn {}".format(name))
+def drop_connect(inputs, prob, training):
+    assert 0.0 <= prob <= 1.0, "Survival Probability should" \
+                            + " be in range [0, 1]."
 
+    if not training:
+        return inputs
 
-def get_actn_fn(name, inplace=True):
-    if not name:
-        return torch.nn.SELU(inplace=inplace)
-    if isinstance(name, str):
-        return activation_fn(name, inplace)
-    return name
+    bs = inputs.shape[0]
+    keep_prob = 1 - prob
+
+    random_tensor = keep_prob
+    random_tensor += torch.rand(size=(bs, 1, 1, 1), dtype=inputs.dtype,
+                                device=inputs.device)
+    binary_tensor = torch.floor(random_tensor)
+    output = inputs / keep_prob * binary_tensor
+    return output
