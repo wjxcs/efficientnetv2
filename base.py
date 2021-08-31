@@ -17,11 +17,8 @@ class SEBlock(nn.Module):
                                           Default: 0.25
         act_layer(nn.<activation_layer>, optional):
                                           Activation layer.
-                                          Default: nn.ReLU
-        norm_layer(nn.<norm_layer>, optional): Normalisation layer.
-                                               If not provided any value,
-                                               identity layer is added.
-                                               Default: None
+                                          If None, default is nn.ReLU
+                                          Default: None
         skip_init(boolean, optional): Skip weight initialisation for the
                                       squeeze and excitation block.
                                       Default: False
@@ -32,11 +29,15 @@ class SEBlock(nn.Module):
         >> output = se(x)
 
     """
-    def __init__(self, in_ch, reduction_ratio=0.25, act_layer=nn.ReLU,
-                 norm_layer=None, skip_init=False, use_avgpool=False):
+    def __init__(self, in_ch, reduction_ratio=0.25, act_layer=None,
+                 skip_init=False, use_avgpool=False):
         super().__init__()
         reduced_channels = make_divisible(in_ch * reduction_ratio, 8)
-        self.actn = act_layer(inplace=True)
+        if act_layer:
+            self.actn = act_layer
+        else:
+            self.actn = nn.ReLU(inplace=True)
+
         self.k = 1
         self.s = 1
         self.d = 1
@@ -44,8 +45,6 @@ class SEBlock(nn.Module):
                                  stride=self.s, dilation=self.d, bias=True)
         self.excite = nn.Conv2d(reduced_channels, in_ch, kernel_size=self.k,
                                 stride=self.s, dilation=self.d, bias=True)
-        self.norm_layer = norm_layer if norm_layer is not None \
-            else nn.Identity()
         self.sigmoid = nn.Sigmoid()
         self.use_avgpool = use_avgpool
         if use_avgpool:
@@ -67,12 +66,10 @@ class SEBlock(nn.Module):
         pad = calc_pad((x.shape[2], x.shape[3]), self.k, self.s, self.d)
         x = F.pad(x, pad, mode='reflect')
         if self.use_avgpool:
-            b, c, _, _ = x.size()
-            x = self.pool(x).view(b, c)
+            x = self.pool(x)
         else:
             x = x.mean((2, 3), keepdim=True)
         x = self.squeeze(x)
-        x = self.norm_layer(x)
         x = self.actn(x)
         x = self.excite(x)
         x = self.sigmoid(x)
@@ -109,7 +106,9 @@ class FusedMBConv(nn.Module):
                                              Default: 0.0
         act_layer(nn.<activation_layer>, optional):
                                           Activation layer.
-                                          Default: MemoryEfficientSiLU
+                                          If input is None, we default to
+                                          MemoryEfficientSiLU.
+                                          Default: None
         use_se(boolean, optional): Use Squeeze and Excitation layer.
                                    If True, SEBlock is added to model.
                                    If False, Identity layer is used instead.
@@ -119,20 +118,23 @@ class FusedMBConv(nn.Module):
                                       Default: False
 
     Examples:
-        >> se = SEBlock(64)
+        >> conv = FusedMBConv(64, 64)
         >> x = torch.randn((1, 64, 20, 30))
-        >> output = se(x)
+        >> output = conv(x)
 
     """
     def __init__(self, in_ch, out_ch, expansion=4, kernel_size=3, stride=1,
                  norm_layer=nn.BatchNorm2d, dropout_ratio=0.0,
                  reduction_ratio=0.25, drop_connect_ratio=0.0,
-                 actn_layer=MemoryEfficientSiLU,
+                 actn_layer=None,
                  use_se=True, skip_init=False):
         super().__init__()
         self.expansion = expansion
         hidden_ch = in_ch * self.expansion
-        self.actn = actn_layer()
+        if actn_layer:
+            self.actn = actn_layer
+        else:
+            self.actn = MemoryEfficientSiLU()
         self.identity = stride == 1 and in_ch == out_ch
 
         self.k1 = kernel_size
@@ -161,7 +163,7 @@ class FusedMBConv(nn.Module):
         self.bn2 = norm_layer(out_ch)
 
         if use_se:
-            self.se = SEBlock(out_ch, reduction_ratio=reduction_ratio,
+            self.se = SEBlock(hidden_ch, reduction_ratio=reduction_ratio,
                               act_layer=self.actn)
         else:
             self.se = nn.Identity()
@@ -185,6 +187,7 @@ class FusedMBConv(nn.Module):
         x = F.pad(x, pad, mode='reflect')
         x = self.actn(self.bn1(self.conv1(x)))
         x = self.dropout(x)
+        print(x.shape)
         x = self.se(x)
 
         pad = calc_pad((x.shape[2], x.shape[3]), self.k2, self.s2, self.d)
