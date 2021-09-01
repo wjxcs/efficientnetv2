@@ -1,7 +1,8 @@
 from itertools import repeat
-from typing import Union, Sequence
 import torch
 import torch.nn as nn
+from typing import Union, Sequence
+
 
 TORCH_MAJOR = int(torch.__version__.split('.')[0])
 TORCH_MINOR = int(torch.__version__.split('.')[1])
@@ -84,8 +85,11 @@ def calc_pad(img_size: Union[int, Sequence[int]],
     return (pad0//2, pad0-pad0//2, pad1//2, pad1-pad1//2)
 
 
+# Converted tf implementation from
+# https://github.com/google/automl/blob/be5340b61e84ae998765ad3340b633fcf57da87a/efficientnetv2/utils.py#L292
+# to pytorch.
 def drop_connect(inputs, prob, training):
-    assert 0.0 <= prob <= 1.0, "Survival Probability should" \
+    assert 0.0 <= prob <= 1.0, "Drop probability should" \
                             + " be in range [0, 1]."
 
     if not training:

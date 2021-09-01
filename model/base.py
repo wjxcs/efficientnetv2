@@ -1,7 +1,72 @@
 import torch.nn as nn
 import torch.nn.functional as F
-from util import calc_pad, drop_connect
-from util import make_divisible, MemoryEfficientSiLU
+
+from .util import calc_pad, drop_connect
+from .util import make_divisible, MemoryEfficientSiLU
+
+
+class Stem(nn.Module):
+    def __init__(self, in_ch, out_ch, kernel_size=3, stride=1,
+                 actn_layer=None, skip_init=True):
+        super().__init__()
+        self.conv = nn.Conv2d(in_ch, out_ch, kernel_size=kernel_size,
+                              stride=stride, bias=False)
+        self.bn = nn.BatchNorm2d(out_ch)
+        if actn_layer:
+            self.actn = actn_layer
+        else:
+            self.actn = MemoryEfficientSiLU()
+
+        self.k = kernel_size
+        self.s = stride
+        self.d = 1
+
+        self.init_weights(skip_init)
+
+    def init_weights(self, skip=False):
+        if not skip:
+            for _, module in self.named_modules():
+                if isinstance(module, nn.Conv2d):
+                    nn.init.kaiming_normal_(module.weight, mode='fan_out',
+                                            nonlinearity='relu')
+                if isinstance(module, nn.BatchNorm2d):
+                    nn.init.ones_(module.weight)
+                    nn.init.zeros_(module.bias)
+
+    def forward(self, x):
+        pad = calc_pad((x.shape[2], x.shape[3]), self.k, self.s, self.d)
+        x = F.pad(x, pad, mode='reflect')
+        return self.actn(self.bn(self.conv(x)))
+
+
+class Head(nn.Module):
+    def __init__(self, in_ch, out_ch, actn_layer=None, skip_init=True):
+        super().__init__()
+        self.conv = nn.Conv2d(in_ch, out_ch, kernel_size=1,
+                              stride=1, bias=False)
+        self.bn = nn.BatchNorm2d(out_ch)
+        if actn_layer:
+            self.actn = actn_layer
+        else:
+            self.actn = MemoryEfficientSiLU()
+
+        self.k, self.s, self.d = 1, 1, 1
+        self.init_weights(skip_init)
+
+    def init_weights(self, skip=False):
+        if not skip:
+            for _, module in self.named_modules():
+                if isinstance(module, nn.Conv2d):
+                    nn.init.kaiming_normal_(module.weight, mode='fan_out',
+                                            nonlinearity='relu')
+                if isinstance(module, nn.BatchNorm2d):
+                    nn.init.ones_(module.weight)
+                    nn.init.zeros_(module.bias)
+
+    def forward(self, x):
+        pad = calc_pad((x.shape[2], x.shape[3]), self.k, self.s, self.d)
+        x = F.pad(x, pad, mode='reflect')
+        return self.actn(self.bn(self.conv(x)))
 
 
 class SEBlock(nn.Module):
@@ -76,21 +141,25 @@ class SEBlock(nn.Module):
         return orig * x
 
 
-class FusedMBConv(nn.Module):
+class MBConv(nn.Module):
     """
-    Fused MBConve : Fused Mobile Inverted Residual Bottleneck.
+    MBConv : Mobile Inverted Residual Bottleneck.
 
+    Implementation of MBConv block.
+    If fused option is set, Fussed MBConv is block is created.
     The only difference betwen MBConv and Fused MBConv is Fused MBConv.
     uses 3*3 conv2d layer inplace of 1*1 conv2d + 3*3 depthwise conv2d.
 
     Args:
         in_ch(int): Input channels.
         out_ch(int): output channels.
+        fused(boolean, optional): Create Fused MBConv block.
+                                  Default: False
         expansion(int, optional): Expansion ratio to be used to expand number
                                   of channels in conv layers.
                                   Default: 4
         kernel_size(int, optional): Kernel size for conv layer.
-                                   Default: 3
+                                    Default: 3
         stride(int, optional): Stride for conv layer.
                                Default: 1
         norm_layer(nn.<norm_layer>, optional): Normalisation layer.
@@ -123,10 +192,9 @@ class FusedMBConv(nn.Module):
         >> output = conv(x)
 
     """
-    def __init__(self, in_ch, out_ch, expansion=4, kernel_size=3, stride=1,
-                 norm_layer=nn.BatchNorm2d, dropout_ratio=0.0,
-                 reduction_ratio=0.25, drop_connect_ratio=0.0,
-                 actn_layer=None,
+    def __init__(self, in_ch, out_ch, fused=False, expansion=4, kernel_size=3,
+                 stride=1, norm_layer=nn.BatchNorm2d, dropout_ratio=0.0,
+                 reduction_ratio=0.25, drop_connect_ratio=0.0, actn_layer=None,
                  use_se=True, skip_init=False):
         super().__init__()
         self.expansion = expansion
@@ -136,9 +204,6 @@ class FusedMBConv(nn.Module):
         else:
             self.actn = MemoryEfficientSiLU()
         self.identity = stride == 1 and in_ch == out_ch
-
-        self.k1 = kernel_size
-        self.s1 = stride
         self.d = 1
 
         if dropout_ratio != 0.0:
@@ -148,19 +213,38 @@ class FusedMBConv(nn.Module):
 
         self.drop_connect_prob = drop_connect_ratio
 
-        self.conv1 = nn.Conv2d(in_ch, hidden_ch, kernel_size=kernel_size,
-                               stride=stride, bias=False)
-        self.bn1 = norm_layer(hidden_ch)
+        self.fused = fused
+
+        if self.fused:
+            self.k1 = kernel_size
+            self.s1 = stride
+            self.conv1 = nn.Conv2d(in_ch, hidden_ch, kernel_size=kernel_size,
+                                   stride=stride, bias=False)
+            self.bn1 = norm_layer(hidden_ch)
+        else:
+            self.k1 = 1
+            self.s1 = 1
+            self.conv1 = nn.Conv2d(in_ch, hidden_ch, kernel_size=1,
+                                   stride=1, bias=False)
+            self.bn1 = norm_layer(hidden_ch)
+
+            # Depthwise conv
+            self.k2 = kernel_size
+            self.s2 = stride
+            self.conv2 = nn.Conv2d(hidden_ch, hidden_ch,
+                                   kernel_size=kernel_size, stride=stride,
+                                   groups=hidden_ch, bias=False)
+            self.bn2 = norm_layer(hidden_ch)
 
         if self.expansion == 1:
             kernel_size, stride = 1, 1
 
-        self.k2 = kernel_size
-        self.s2 = stride
+        self.k3 = kernel_size
+        self.s3 = stride
 
-        self.conv2 = nn.Conv2d(hidden_ch, out_ch, kernel_size=kernel_size,
+        self.conv3 = nn.Conv2d(hidden_ch, out_ch, kernel_size=kernel_size,
                                stride=stride, bias=False)
-        self.bn2 = norm_layer(out_ch)
+        self.bn3 = norm_layer(out_ch)
 
         if use_se:
             self.se = SEBlock(hidden_ch, reduction_ratio=reduction_ratio,
@@ -182,17 +266,21 @@ class FusedMBConv(nn.Module):
 
     def forward(self, x):
         orig = x
-
         pad = calc_pad((x.shape[2], x.shape[3]), self.k1, self.s1, self.d)
         x = F.pad(x, pad, mode='reflect')
         x = self.actn(self.bn1(self.conv1(x)))
+
+        if not self.fused:
+            pad = calc_pad((x.shape[2], x.shape[3]), self.k2, self.s2, self.d)
+            x = F.pad(x, pad, mode='reflect')
+            x = self.actn(self.bn2(self.conv2(x)))
+
         x = self.dropout(x)
-        print(x.shape)
         x = self.se(x)
 
-        pad = calc_pad((x.shape[2], x.shape[3]), self.k2, self.s2, self.d)
+        pad = calc_pad((x.shape[2], x.shape[3]), self.k3, self.s3, self.d)
         x = F.pad(x, pad, mode='reflect')
-        x = self.bn2(self.conv2(x))
+        x = self.bn3(self.conv3(x))
         if self.expansion == 1:
             x = self.actn(x)
 
