@@ -148,54 +148,67 @@ class MBConv(nn.Module):
     Implementation of MBConv block.
     If fused option is set, Fussed MBConv is block is created.
     The only difference betwen MBConv and Fused MBConv is Fused MBConv.
-    uses 3*3 conv2d layer inplace of 1*1 conv2d + 3*3 depthwise conv2d.
+    uses 3*3 conv2d layer inplace of 3*3 depthwise conv2d followed by 1*1
+    conv.
 
     Args:
-        in_ch(int): Input channels.
-        out_ch(int): output channels.
-        fused(boolean, optional): Create Fused MBConv block.
-                                  Default: False
-        expansion(int, optional): Expansion ratio to be used to expand number
-                                  of channels in conv layers.
-                                  Default: 4
-        kernel_size(int, optional): Kernel size for conv layer.
-                                    Default: 3
-        stride(int, optional): Stride for conv layer.
-                               Default: 1
+        in_ch(int):                            Input channels.
+
+        out_ch(int):                           Output channels.
+
+        fused(boolean, optional):              Create Fused MBConv block.
+                                               Default: False
+
+        expansion(int, optional):              Expansion ratio to be used to expand number
+                                               of channels in conv layers.
+                                               Default: 4
+
+        kernel_size(int, optional):            Kernel size for conv layer.
+                                               Default: 3
+
+        stride(int, optional):                 Stride for conv layer.
+                                               Default: 1
+
         norm_layer(nn.<norm_layer>, optional): Normalisation layer.
                                                Default: nn.BatchNorm2d
-        dropout_ratio(float, optional): Dropout ratio within range [0, 1]
-                                        Default: 0.0
-        reduction_ratio(float, optional): The reduction ratio used to
-                                          calculate out channels in squeeze
-                                          conv layer to nearest integer value.
-                                          Value is between 0. and 1.0.
-                                          Default: 0.25
-        drop_connect_ratio(float, optional): Drop probability for drop connect.
-                                             Default: 0.0
+
+        dropout_ratio(float, optional):        Dropout ratio within range [0, 1]
+                                               Default: 0.0
+
+        reduction_ratio(float, optional):      The reduction ratio used to
+                                               calculate out channels in squeeze
+                                               conv layer to nearest integer value.
+                                               Value is between 0. and 1.0.
+                                               Default: 0.25
+
+        drop_connect_ratio(float, optional):   Drop probability for drop connect.
+                                               Default: 0.0
+
         act_layer(nn.<activation_layer>, optional):
-                                          Activation layer.
-                                          If input is None, we default to
-                                          MemoryEfficientSiLU.
-                                          Default: None
-        use_se(boolean, optional): Use Squeeze and Excitation layer.
-                                   If True, SEBlock is added to model.
-                                   If False, Identity layer is used instead.
-                                   Default:True
-        skip_init(boolean, optional): Skip weight initialisation for the
-                                      squeeze and excitation block.
-                                      Default: False
+                                               Activation layer.
+                                               If input is None, we default to
+                                               MemoryEfficientSiLU.
+                                               Default: None
+
+        use_se(boolean, optional):             Use Squeeze and Excitation layer.
+                                               If True, SEBlock is added to model.
+                                               If False, Identity layer is used instead.
+                                               Default:True
+
+        skip_init(boolean, optional):          Skip weight initialisation for the
+                                               squeeze and excitation block.
+                                               Default: False
 
     Examples:
-        >> conv = FusedMBConv(64, 64)
+        >> conv = MBConv(64, 64)
         >> x = torch.randn((1, 64, 20, 30))
         >> output = conv(x)
 
     """
-    def __init__(self, in_ch, out_ch, fused=False, expansion=4, kernel_size=3,
-                 stride=1, norm_layer=nn.BatchNorm2d, dropout_ratio=0.0,
-                 reduction_ratio=0.25, drop_connect_ratio=0.0, actn_layer=None,
-                 use_se=True, skip_init=False):
+    def __init__(self, in_ch: int, out_ch: int, fused: bool=False, expansion: int=4,
+                 kernel_size: int=3, stride: int=1, norm_layer=nn.BatchNorm2d, dropout_ratio: float=0.0,
+                 reduction_ratio: float=0.25, drop_connect_ratio: float=0.0, actn_layer=None,
+                 use_se: bool=True, skip_init: bool=False) -> None:
         super().__init__()
         self.expansion = expansion
         hidden_ch = in_ch * self.expansion
@@ -288,5 +301,4 @@ class MBConv(nn.Module):
             if self.drop_connect_prob > 0.0:
                 x = drop_connect(x, self.drop_connect_prob, self.training)
             return orig + x
-        else:
-            return x
+        return x
